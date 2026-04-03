@@ -1,10 +1,20 @@
+import ast
+
 import pandas as pd
 
 
 def clean_text(value):
     if pd.isna(value):
         return ""
+
     text = str(value).strip()
+
+    if text.startswith(("b'", 'b"')):
+        try:
+            text = ast.literal_eval(text).decode("utf-8", errors="ignore")
+        except (ValueError, SyntaxError, AttributeError, UnicodeDecodeError):
+            text = text[2:-1]
+
     return " ".join(text.split())
 
 
@@ -48,17 +58,14 @@ def aggregate_headlines_by_day(headlines_df):
     grouped = (
         headlines_df.groupby("Date", as_index=False)
         .agg(
-            headlines=("News", list),
+            text=("News", lambda x: " [SEP] ".join(x)),
             headline_count=("News", "size"),
         )
         .sort_values("Date")
         .reset_index(drop=True)
     )
 
-    grouped["text"] = grouped["headlines"].apply(lambda x: " [SEP] ".join(x))
-
     return grouped
-
 
 def add_price_features(prices_df):
     df = prices_df.copy()
