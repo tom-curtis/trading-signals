@@ -1,63 +1,109 @@
 import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 
-def load_kaggle_data(news_path, prices_path):
-    news_df = pd.read_csv(news_path)
-    prices_df = pd.read_csv(prices_path)
-    print(f"Loaded news: {news_df.shape}, prices: {prices_df.shape}")
-    return news_df, prices_df
+def clean_text(value):
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return " ".join(text.split())
 
 
-def create_headline_examples(news_df):
-    headlines = []
-    labels = []
-    for idx, row in news_df.iterrows():
-        day_label = row['Label']
-        for i in range(1, 26):
-            col_name = f'Top{i}'
-            if col_name in row and pd.notna(row[col_name]):
-                headline = str(row[col_name]).strip()
-                if len(headline) > 0:
-                    headlines.append(headline)
-                    labels.append(day_label)
-    labels = np.array(labels)
-    print(f"Created {len(headlines)} examples. Balance: {np.mean(labels):.3f} UP")
-    return headlines, labels
+def load_headlines_csv(path):
+    df = pd.read_csv(path)
+
+    if not {"Date", "News"}.issubset(df.columns):
+        raise ValueError(f"Headlines CSV must contain Date and News columns. Found: {df.columns}")
+
+    df = df.copy()
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["News"] = df["News"].map(clean_text)
+
+    df = df.dropna(subset=["Date"])
+    df = df[df["News"] != ""]
+
+    return df.sort_values("Date").reset_index(drop=True)
 
 
-def split_data(X, y, val_size=0.15, test_size=0.15, random_state=42):
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X, y, test_size=(val_size + test_size), random_state=random_state, stratify=y
+def load_prices_csv(path):
+    df = pd.read_csv(path)
+
+    required = {"Date", "Open", "High", "Low", "Close", "Volume", "Adj Close"}
+    if not required.issubset(df.columns):
+        raise ValueError(f"Prices CSV missing columns: {required - set(df.columns)}")
+
+    df = df.copy()
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"])
+
+    numeric_cols = ["Open", "High", "Low", "Close", "Volume", "Adj Close"]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=numeric_cols)
+
+    return df.sort_values("Date").reset_index(drop=True)
+
+
+def aggregate_headlines_by_day(headlines_df):
+    grouped = (
+        headlines_df.groupby("Date", as_index=False)
+        .agg(
+            headlines=("News", list),
+            headline_count=("News", "size"),
+        )
+        .sort_values("Date")
+        .reset_index(drop=True)
     )
-    split_ratio = val_size / (val_size + test_size)
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp, test_size=(1 - split_ratio), random_state=random_state, stratify=y_temp
+
+    grouped["text"] = grouped["headlines"].apply(lambda x: " [SEP] ".join(x))
+
+    return grouped
+
+
+def add_price_features(prices_df):
+    df = prices_df.copy()
+
+    df["daily_return"] = (df["Close"] - df["Open"]) / df["Open"]
+    df["intraday_range"] = (df["High"] - df["Low"]) / df["Open"]
+    df["close_vs_prev_close"] = df["Close"].pct_change()
+    df["volume_change"] = df["Volume"].pct_change()
+
+    return df
+
+
+def merge_market_and_headlines(prices_df, headlines_df):
+    df = prices_df.merge(
+        headlines_df,
+        on="Date",
+        how="inner",
+        validate="one_to_one",
     )
-    print(f"Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
-    return X_train, X_val, X_test, y_train, y_val, y_test
+
+    return df.sort_values("Date").reset_index(drop=True)
 
 
-def tokenize_and_pad(headlines_train, headlines_val, headlines_test,
-                     vocab_size=5000, max_length=500):
-    tokenizer = Tokenizer(num_words=vocab_size, oov_token='<OOV>')
-    tokenizer.fit_on_texts(headlines_train)
-    
-    X_train_seq = tokenizer.texts_to_sequences(headlines_train)
-    X_val_seq = tokenizer.texts_to_sequences(headlines_val)
-    X_test_seq = tokenizer.texts_to_sequences(headlines_test)
-    
-    X_train_padded = pad_sequences(X_train_seq, maxlen=max_length, padding='post')
-    X_val_padded = pad_sequences(X_val_seq, maxlen=max_length, padding='post')
-    X_test_padded = pad_sequences(X_test_seq, maxlen=max_length, padding='post')
-    
-    print(f"Tokenized: vocab={len(tokenizer.word_index)}, shapes={X_train_padded.shape}")
-    return X_train_padded, X_val_padded, X_test_padded, tokenizer
+def add_next_day_target(df, drop_no_change_days=True):
+    df = df.copy()
+
+    df["next_close"] = df["Close"].shift(-1)
+    df["next_day_return"] = (df["next_close"] - df["Close"]) / df["Close"]
+
+    df = df.dropna(subset=["next_close", "next_day_return"])
+
+    if drop_no_change_days:
+        df = df[df["next_day_return"] != 0]
+
+    df["target"] = (df["next_day_return"] > 0).astype(int)
+
+    return df.reset_index(drop=True)
 
 
-def get_headline_stats(headlines):
-    lengths = [len(h.split()) for h in headlines]
-    print(f"Headlines: {len(headlines)}, avg words: {np.mean(lengths):.1f}, max: {np.max(lengths)}")
+def split_by_date(df, train_end, val_end):
+    train_end = pd.Timestamp(train_end)
+    val_end = pd.Timestamp(val_end)
+
+    train = df[df["Date"] <= train_end].copy()
+    val = df[(df["Date"] > train_end) & (df["Date"] <= val_end)].copy()
+    test = df[df["Date"] > val_end].copy()
+
+    return train, val, test
