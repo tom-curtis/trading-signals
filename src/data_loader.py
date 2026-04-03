@@ -1,5 +1,6 @@
 import ast
 import pandas as pd
+import math
 
 
 def clean_text(value):
@@ -101,12 +102,21 @@ def add_next_day_target(df):
     return df.reset_index(drop=True)
 
 
-def split_by_date(df, train_end, val_end):
-    train_end = pd.Timestamp(train_end)
-    val_end = pd.Timestamp(val_end)
+def split_by_ratio(df, train_ratio=0.7, val_ratio=0.15):
+    if train_ratio <= 0 or val_ratio <= 0:
+        raise ValueError("train_ratio and val_ratio must be positive.")
 
-    train = df[df["Date"] <= train_end].copy()
-    val = df[(df["Date"] > train_end) & (df["Date"] <= val_end)].copy()
-    test = df[df["Date"] > val_end].copy()
+    if train_ratio + val_ratio >= 1:
+        raise ValueError("train_ratio + val_ratio must be less than 1.")
+
+    df = df.sort_values("Date").reset_index(drop=True)
+
+    n = len(df)
+    train_end = math.floor(n * train_ratio)
+    val_end = math.floor(n * (train_ratio + val_ratio))
+
+    train = df.iloc[:train_end].copy()
+    val = df.iloc[train_end:val_end].copy()
+    test = df.iloc[val_end:].copy()
 
     return train, val, test
