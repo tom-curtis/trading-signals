@@ -7,3 +7,4 @@ results/models/
 *.h5
 *.pkl
 .env
+.idea
