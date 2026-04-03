@@ -1,5 +1,4 @@
 import ast
-
 import pandas as pd
 
 
@@ -67,6 +66,7 @@ def aggregate_headlines_by_day(headlines_df):
 
     return grouped
 
+
 def add_price_features(prices_df):
     df = prices_df.copy()
 
@@ -89,17 +89,13 @@ def merge_market_and_headlines(prices_df, headlines_df):
     return df.sort_values("Date").reset_index(drop=True)
 
 
-def add_next_day_target(df, drop_no_change_days=True):
+def add_next_day_target(df):
     df = df.copy()
 
     df["next_close"] = df["Close"].shift(-1)
     df["next_day_return"] = (df["next_close"] - df["Close"]) / df["Close"]
 
     df = df.dropna(subset=["next_close", "next_day_return"])
-
-    if drop_no_change_days:
-        df = df[df["next_day_return"] != 0]
-
     df["target"] = (df["next_day_return"] > 0).astype(int)
 
     return df.reset_index(drop=True)
